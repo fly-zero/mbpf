@@ -23,7 +23,9 @@ enum class OpCode : uint8_t
     kNot,
     kJumpIfFalse,
     kJump,
-    kRet
+    kRet,
+    kAnd,
+    kOr
 };
 
 // Base instruction layout is one 64-bit slot:

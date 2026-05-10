@@ -123,6 +123,16 @@ bool verify_program_impl(const ProgramView &program)
                 return false;
             ++i;
             break;
+        case OpCode::kAnd:
+            if (!reg_ok(ins.a()) || !reg_ok(ins.b()) || !reg_ok(ins.c()))
+                return false;
+            ++i;
+            break;
+        case OpCode::kOr:
+            if (!reg_ok(ins.a()) || !reg_ok(ins.b()) || !reg_ok(ins.c()))
+                return false;
+            ++i;
+            break;
         default:
             return false;
         }
@@ -254,6 +264,26 @@ int execute_program_impl(const Instruction *instructions,
             }
 
             regs[static_cast<size_t>(ins.a())] = !regs[static_cast<size_t>(ins.b())];
+            ++pc;
+            break;
+        case OpCode::kAnd:
+            if (!reg_ok(ins.a()) || !reg_ok(ins.b()) || !reg_ok(ins.c())) {
+                set_last_error("invalid And at runtime");
+                return MBPF_ERR_VM_RUNTIME;
+            }
+
+            regs[static_cast<size_t>(ins.a())] =
+                regs[static_cast<size_t>(ins.b())] & regs[static_cast<size_t>(ins.c())];
+            ++pc;
+            break;
+        case OpCode::kOr:
+            if (!reg_ok(ins.a()) || !reg_ok(ins.b()) || !reg_ok(ins.c())) {
+                set_last_error("invalid Or at runtime");
+                return MBPF_ERR_VM_RUNTIME;
+            }
+
+            regs[static_cast<size_t>(ins.a())] =
+                regs[static_cast<size_t>(ins.b())] | regs[static_cast<size_t>(ins.c())];
             ++pc;
             break;
         case OpCode::kJumpIfFalse:

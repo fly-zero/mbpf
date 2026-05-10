@@ -18,6 +18,8 @@
 "<="                          { return LE; }
 "&&"                          { return AND; }
 "||"                          { return OR; }
+"&"                           { return BIT_AND; }
+"|"                           { return BIT_OR; }
 [0-9]+                        { yylval.ival = atoll(yytext); return INTEGER; }
 "0x"[0-9a-fA-F]+              { yylval.ival = strtoll(yytext, nullptr, 16); return INTEGER; }
 [a-zA-Z_][a-zA-Z0-9_]*        { yylval.sval = strdup(yytext); return IDENT; }

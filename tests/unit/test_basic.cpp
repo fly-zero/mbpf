@@ -371,6 +371,20 @@ void test_hexadecimal_support()
     mbpf_registry_free(reg);
 }
 
+void test_bitwise_operators()
+{
+    mbpf_registry_t *reg = create_default_registry();
+
+    Input input = {0x1205, 0x1200, 0x0005, 0, 0};
+    assert_expr_result(reg, "(a & 0x00FF) == 5", input, true);
+    assert_expr_result(reg, "(a & 0x0F00) == 0x0200", input, true);
+    assert_expr_result(reg, "(a & 0x00FF) == 6", input, false);
+    assert_expr_result(reg, "(b | c) == a", input, true);
+    assert_expr_result(reg, "(b | 0x0001) == a", input, false);
+
+    mbpf_registry_free(reg);
+}
+
 }  // namespace
 
 int main()
@@ -390,5 +404,6 @@ int main()
     test_program_deserialize_invalid_blob();
     test_program_deserialize_to_memory_roundtrip();
     test_hexadecimal_support();
+    test_bitwise_operators();
     return 0;
 }

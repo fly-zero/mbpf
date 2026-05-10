@@ -61,17 +61,8 @@ private:
             return emit_immediate(expr->int_value_, ValueType::kInt);
         case frontend::ExprKind::kBoolean:
             return emit_immediate(expr->bool_value_ ? 1 : 0, ValueType::kBool);
-        case frontend::ExprKind::kNot: {
-            EmitValue operand = ensure_bool(emit_expr(expr->left_));
-            if (!ok_) {
-                return {0, ValueType::kBool};
-            }
-
-            auto const dst = alloc_reg();
-            emit(OpCode::kNot, dst, operand.reg_, 0, 0);
-            release_reg(operand.reg_);
-            return {dst, ValueType::kBool};
-        }
+        case frontend::ExprKind::kNot:
+            return emit_not(expr->left_);
         case frontend::ExprKind::kAnd:
             return emit_logical_and(expr->left_, expr->right_);
         case frontend::ExprKind::kOr:
@@ -88,6 +79,10 @@ private:
             return emit_compare(OpCode::kCmpGe, expr->left_, expr->right_);
         case frontend::ExprKind::kLe:
             return emit_compare(OpCode::kCmpLe, expr->left_, expr->right_);
+        case frontend::ExprKind::kBitAnd:
+            return emit_bitwise(OpCode::kAnd, expr->left_, expr->right_);
+        case frontend::ExprKind::kBitOr:
+            return emit_bitwise(OpCode::kOr, expr->left_, expr->right_);
         default:
             fail("unsupported expression kind");
             return {0, ValueType::kBool};
@@ -148,6 +143,36 @@ private:
         emit(op, dst, lhs.reg_, rhs.reg_, 0);
         release_reg(lhs.reg_);
         release_reg(rhs.reg_);
+        return {dst, ValueType::kBool};
+    }
+
+    EmitValue emit_bitwise(OpCode                op,
+                           const frontend::Expr *lhs_expr,
+                           const frontend::Expr *rhs_expr)
+    {
+        EmitValue lhs = emit_expr(lhs_expr);
+        EmitValue rhs = emit_expr(rhs_expr);
+        if (!ok_) {
+            return {0, ValueType::kInt};
+        }
+
+        auto const dst = alloc_reg();
+        emit(op, dst, lhs.reg_, rhs.reg_, 0);
+        release_reg(lhs.reg_);
+        release_reg(rhs.reg_);
+        return {dst, ValueType::kInt};
+    }
+
+    EmitValue emit_not(const frontend::Expr *operand_expr)
+    {
+        EmitValue operand = ensure_bool(emit_expr(operand_expr));
+        if (!ok_) {
+            return {0, ValueType::kBool};
+        }
+
+        auto const dst = alloc_reg();
+        emit(OpCode::kNot, dst, operand.reg_, 0, 0);
+        release_reg(operand.reg_);
         return {dst, ValueType::kBool};
     }
 

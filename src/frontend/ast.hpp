@@ -17,7 +17,9 @@ enum class ExprKind
     kGt,
     kLt,
     kGe,
-    kLe
+    kLe,
+    kBitAnd,
+    kBitOr
 };
 
 struct Expr

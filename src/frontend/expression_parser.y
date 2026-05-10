@@ -35,8 +35,9 @@ void yyerror(const char *s);
 %token <ival> INTEGER
 %token <bval> BOOLEAN
 %token EQ NE GE LE AND OR
+%token BIT_AND BIT_OR
 
-%type <expr> expr or_expr and_expr unary_expr primary comparison operand
+%type <expr> expr or_expr and_expr comparison_expr bitwise_expr unary_expr primary
 
 %destructor { free($$); } <sval>
 
@@ -52,43 +53,45 @@ expr:
 
 or_expr:
     and_expr { $$ = $1; }
-    | or_expr OR and_expr { $$ = make_binary(ExprKind::kOr, $1, $3); }
+  | or_expr OR and_expr { $$ = make_binary(ExprKind::kOr, $1, $3); }
 ;
 
 and_expr:
+    comparison_expr { $$ = $1; }
+  | and_expr AND comparison_expr { $$ = make_binary(ExprKind::kAnd, $1, $3); }
+;
+
+comparison_expr:
+    bitwise_expr { $$ = $1; }
+  | bitwise_expr EQ bitwise_expr { $$ = make_binary(ExprKind::kEq, $1, $3); }
+  | bitwise_expr NE bitwise_expr { $$ = make_binary(ExprKind::kNe, $1, $3); }
+  | bitwise_expr '>' bitwise_expr { $$ = make_binary(ExprKind::kGt, $1, $3); }
+  | bitwise_expr '<' bitwise_expr { $$ = make_binary(ExprKind::kLt, $1, $3); }
+  | bitwise_expr GE bitwise_expr { $$ = make_binary(ExprKind::kGe, $1, $3); }
+  | bitwise_expr LE bitwise_expr { $$ = make_binary(ExprKind::kLe, $1, $3); }
+;
+
+bitwise_expr:
     unary_expr { $$ = $1; }
-    | and_expr AND unary_expr { $$ = make_binary(ExprKind::kAnd, $1, $3); }
+  | bitwise_expr BIT_AND unary_expr { $$ = make_binary(ExprKind::kBitAnd, $1, $3); }
+  | bitwise_expr BIT_OR unary_expr { $$ = make_binary(ExprKind::kBitOr, $1, $3); }
 ;
 
 unary_expr:
     primary { $$ = $1; }
-    | '!' unary_expr { $$ = make_unary(ExprKind::kNot, $2); }
+  | '!' unary_expr { $$ = make_unary(ExprKind::kNot, $2); }
 ;
 
 primary:
     '(' expr ')' { $$ = $2; }
-    | comparison { $$ = $1; }
-    | operand { $$ = $1; }
-;
-
-comparison:
-    operand EQ operand { $$ = make_binary(ExprKind::kEq, $1, $3); }
-    | operand NE operand { $$ = make_binary(ExprKind::kNe, $1, $3); }
-    | operand '>' operand { $$ = make_binary(ExprKind::kGt, $1, $3); }
-    | operand '<' operand { $$ = make_binary(ExprKind::kLt, $1, $3); }
-    | operand GE operand { $$ = make_binary(ExprKind::kGe, $1, $3); }
-    | operand LE operand { $$ = make_binary(ExprKind::kLe, $1, $3); }
-;
-
-operand:
-    IDENT {
+  | IDENT {
         $$ = make_ident($1);
         free($1);
     }
-    | INTEGER {
+  | INTEGER {
         $$ = make_integer($1);
     }
-    | BOOLEAN {
+  | BOOLEAN {
         $$ = make_boolean($1 != 0);
     }
 ;

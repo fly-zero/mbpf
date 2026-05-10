@@ -360,6 +360,17 @@ void test_program_deserialize_to_memory_roundtrip()
     mbpf_registry_free(reg);
 }
 
+void test_hexadecimal_support()
+{
+    mbpf_registry_t *reg = create_default_registry();
+
+    Input input = {0x1234, 0, 0, 0, 0};
+    assert_expr_result(reg, "a == 0x1234", input, true);
+    assert_expr_result(reg, "a == 0x5678", input, false);
+
+    mbpf_registry_free(reg);
+}
+
 }  // namespace
 
 int main()
@@ -378,5 +389,6 @@ int main()
     test_program_serialize_deserialize_roundtrip();
     test_program_deserialize_invalid_blob();
     test_program_deserialize_to_memory_roundtrip();
+    test_hexadecimal_support();
     return 0;
 }

@@ -44,7 +44,7 @@ int64_t load_field(const void *ctx, uint32_t offset, uint8_t size, mbpf_type_t t
     return static_cast<int64_t>(raw);
 }
 
-bool verify_program(const ProgramView &program)
+bool verify_program_impl(const ProgramView &program)
 {
     const int reg_cnt = program.register_count_;
     if (reg_cnt < 0 || reg_cnt > kMaxRegisterCount) {
@@ -138,26 +138,23 @@ bool verify_program(const ProgramView &program)
     return true;
 }
 
-}  // namespace
-
-int execute_program(const Program &program, const void *ctx, bool *out_result)
-{
-    return execute_program(program.instructions_.data(),
-                           program.instructions_.size(),
-                           program.register_count_,
-                           ctx,
-                           out_result);
-}
-
-int execute_program(const Instruction *instructions,
-                    size_t             instruction_count,
-                    int                register_count,
-                    const void        *ctx,
-                    bool              *out_result)
+int execute_program_impl(const Instruction *instructions,
+                         size_t             instruction_count,
+                         int                register_count,
+                         const void        *ctx,
+                         bool              *out_result,
+                         bool               run_verify)
 {
     if (!ctx || !out_result) {
         set_last_error("invalid execute arguments");
         return MBPF_ERR_INVALID_ARG;
+    }
+
+    if (run_verify) {
+        const int verify_status = verify_program(instructions, instruction_count, register_count);
+        if (verify_status != MBPF_OK) {
+            return verify_status;
+        }
     }
 
     ProgramView view;
@@ -165,14 +162,9 @@ int execute_program(const Instruction *instructions,
     view.instruction_count_ = instruction_count;
     view.register_count_    = register_count;
 
-    if (!verify_program(view)) {
-        set_last_error("program verification failed");
-        return MBPF_ERR_VERIFICATION;
-    }
-
-    const int            reg_cnt = view.register_count_;
-    std::vector<int64_t> regs(static_cast<size_t>(reg_cnt + 8), 0);
-    size_t               pc = 0;
+    const int reg_cnt                 = view.register_count_;
+    int64_t   regs[kMaxRegisterCount] = {0};
+    size_t    pc                      = 0;
 
     auto reg_ok = [reg_cnt](uint8_t r) { return static_cast<int>(r) < reg_cnt; };
 
@@ -302,6 +294,52 @@ int execute_program(const Instruction *instructions,
 
     set_last_error("program terminated without RET");
     return MBPF_ERR_VM_RUNTIME;
+}
+
+}  // namespace
+
+int verify_program(const Instruction *instructions, size_t instruction_count, int register_count)
+{
+    ProgramView view;
+    view.instructions_      = instructions;
+    view.instruction_count_ = instruction_count;
+    view.register_count_    = register_count;
+
+    if (!verify_program_impl(view)) {
+        set_last_error("program verification failed");
+        return MBPF_ERR_VERIFICATION;
+    }
+
+    return MBPF_OK;
+}
+
+int execute_program(const Program &program, const void *ctx, bool *out_result)
+{
+    return execute_program(program.instructions_.data(),
+                           program.instructions_.size(),
+                           program.register_count_,
+                           ctx,
+                           out_result);
+}
+
+int execute_program(const Instruction *instructions,
+                    size_t             instruction_count,
+                    int                register_count,
+                    const void        *ctx,
+                    bool              *out_result)
+{
+    return execute_program_impl(
+        instructions, instruction_count, register_count, ctx, out_result, true);
+}
+
+int execute_program_verified(const Instruction *instructions,
+                             size_t             instruction_count,
+                             int                register_count,
+                             const void        *ctx,
+                             bool              *out_result)
+{
+    return execute_program_impl(
+        instructions, instruction_count, register_count, ctx, out_result, false);
 }
 
 }  // namespace mbpf

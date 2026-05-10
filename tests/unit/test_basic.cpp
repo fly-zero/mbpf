@@ -222,6 +222,32 @@ void test_compile_options_and_api_args()
     mbpf_registry_free(reg);
 }
 
+void test_execute_same_program_multiple_times()
+{
+    mbpf_registry_t *reg     = create_default_registry();
+    mbpf_program_t  *program = nullptr;
+
+    assert(mbpf_compile_expression(reg, "a > b", nullptr, &program) == MBPF_OK);
+    assert(program);
+
+    Input in1 = {5, 2, 0, 0, 0};
+    Input in2 = {1, 3, 0, 0, 0};
+    Input in3 = {9, 9, 0, 0, 0};
+
+    bool out = false;
+    assert(mbpf_execute(program, &in1, &out) == MBPF_OK);
+    assert(out == true);
+
+    assert(mbpf_execute(program, &in2, &out) == MBPF_OK);
+    assert(out == false);
+
+    assert(mbpf_execute(program, &in3, &out) == MBPF_OK);
+    assert(out == false);
+
+    mbpf_program_free(program);
+    mbpf_registry_free(reg);
+}
+
 void test_long_expression_register_reuse()
 {
     mbpf_registry_t *reg = create_default_registry();
@@ -347,6 +373,7 @@ int main()
     test_literals_and_constant_expressions();
     test_compile_failures();
     test_compile_options_and_api_args();
+    test_execute_same_program_multiple_times();
     test_long_expression_register_reuse();
     test_program_serialize_deserialize_roundtrip();
     test_program_deserialize_invalid_blob();

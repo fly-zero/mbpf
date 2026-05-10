@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -18,11 +19,12 @@ struct mbpf_registry
 
 struct alignas(mbpf::Instruction) mbpf_program
 {
-    int                      register_count_     = 0;
-    uint32_t                 instruction_count_  = 0;
-    const mbpf::Instruction *instructions_       = nullptr;
-    mbpf::Instruction       *owned_instructions_ = nullptr;
-    bool                     owns_self_          = false;
+    int                       register_count_     = 0;
+    uint32_t                  instruction_count_  = 0;
+    const mbpf::Instruction  *instructions_       = nullptr;
+    mbpf::Instruction        *owned_instructions_ = nullptr;
+    bool                      owns_self_          = false;
+    mutable std::atomic<bool> verified_           = false;
 };
 
 namespace {
@@ -296,11 +298,22 @@ int mbpf_execute(const mbpf_program_t *program, const void *ctx, bool *out_resul
             return shape_status;
         }
 
-        return mbpf::execute_program(program->instructions_,
+        if (!program->verified_.load(std::memory_order_acquire)) {
+            const int verify_status =
+                mbpf::verify_program(program->instructions_,
                                      static_cast<size_t>(program->instruction_count_),
-                                     program->register_count_,
-                                     ctx,
-                                     out_result);
+                                     program->register_count_);
+            if (verify_status != MBPF_OK) {
+                return verify_status;
+            }
+            program->verified_.store(true, std::memory_order_release);
+        }
+
+        return mbpf::execute_program_verified(program->instructions_,
+                                              static_cast<size_t>(program->instruction_count_),
+                                              program->register_count_,
+                                              ctx,
+                                              out_result);
     } catch (const std::exception &e) {
         mbpf::set_last_error(std::string{e.what()});
         return MBPF_ERR_VM_RUNTIME;
@@ -403,6 +416,14 @@ int mbpf_program_deserialize(const void *buffer, size_t buffer_size, mbpf_progra
         program->instruction_count_ = instruction_count;
         program->owns_self_         = true;
 
+        int verify_status = mbpf::verify_program(program->instructions_,
+                                                 static_cast<size_t>(program->instruction_count_),
+                                                 program->register_count_);
+        if (verify_status != MBPF_OK) {
+            return verify_status;
+        }
+        program->verified_.store(true, std::memory_order_release);
+
         *out_program = program.release();
         return MBPF_OK;
     } catch (const std::exception &e) {
@@ -458,7 +479,7 @@ int mbpf_program_deserialize_to_memory(const void      *buffer,
         }
 
         auto *program = static_cast<mbpf_program_t *>(program_memory);
-        std::memset(program, 0, sizeof(*program));
+        new (program) mbpf_program();
 
         if (instruction_count_sz > 0) {
             auto *ins = reinterpret_cast<mbpf::Instruction *>(
@@ -475,6 +496,14 @@ int mbpf_program_deserialize_to_memory(const void      *buffer,
         program->instruction_count_  = instruction_count;
         program->owns_self_          = false;
         program->owned_instructions_ = nullptr;
+
+        int verify_status = mbpf::verify_program(program->instructions_,
+                                                 static_cast<size_t>(program->instruction_count_),
+                                                 program->register_count_);
+        if (verify_status != MBPF_OK) {
+            return verify_status;
+        }
+        program->verified_.store(true, std::memory_order_release);
 
         *out_program = program;
         return MBPF_OK;
@@ -507,6 +536,7 @@ void mbpf_program_free(mbpf_program_t *program)
         program->instructions_      = nullptr;
         program->instruction_count_ = 0;
         program->register_count_    = 0;
+        program->verified_.store(false, std::memory_order_relaxed);
     } catch (...) {
     }
 }

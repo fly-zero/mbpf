@@ -9,6 +9,8 @@ enum class ExprKind
     kIdentifier,
     kInteger,
     kBoolean,
+    kIpv4,
+    kIpv6,
     kNot,
     kAnd,
     kOr,
@@ -44,6 +46,7 @@ struct Expr
     Expr       *left_;
     Expr       *right_;
     std::string ident_;
+    std::string text_value_;
     long long   int_value_;
     bool        bool_value_;
 };
@@ -57,5 +60,9 @@ Expr *make_ident(const std::string &name);
 Expr *make_integer(long long value);
 
 Expr *make_boolean(bool value);
+
+Expr *make_ipv4(const std::string &value);
+
+Expr *make_ipv6(const std::string &value);
 
 }  // namespace mbpf::frontend

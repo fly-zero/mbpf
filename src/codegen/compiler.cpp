@@ -1,7 +1,11 @@
 #include "codegen/compiler.hpp"
 
+#include <arpa/inet.h>
+
+#include <array>
 #include <bitset>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -11,13 +15,21 @@ namespace {
 enum class ValueType : uint8_t
 {
     kBool,
-    kInt
+    kInt,
+    kIpv4,
+    kIpv6
 };
 
 struct EmitValue
 {
     uint8_t   reg_;
     ValueType type_;
+};
+
+struct EmitIpv6Value
+{
+    uint8_t hi_reg_;
+    uint8_t lo_reg_;
 };
 
 class Compiler
@@ -46,6 +58,11 @@ public:
         return true;
     }
 
+    int status() const
+    {
+        return status_;
+    }
+
 private:
     EmitValue emit_expr(const frontend::Expr *expr)
     {
@@ -61,6 +78,11 @@ private:
             return emit_immediate(expr->int_value_, ValueType::kInt);
         case frontend::ExprKind::kBoolean:
             return emit_immediate(expr->bool_value_ ? 1 : 0, ValueType::kBool);
+        case frontend::ExprKind::kIpv4:
+            return emit_ipv4(expr->text_value_);
+        case frontend::ExprKind::kIpv6:
+            fail(MBPF_ERR_TYPE_MISMATCH, "ipv6 values are only supported in == comparisons");
+            return {0, ValueType::kIpv6};
         case frontend::ExprKind::kNot:
             return emit_not(expr->left_);
         case frontend::ExprKind::kAnd:
@@ -89,27 +111,97 @@ private:
         }
     }
 
+    ValueType qualifier_value_type(mbpf_type_t type) const
+    {
+        switch (type) {
+        case MBPF_TYPE_BOOL:
+            return ValueType::kBool;
+        case MBPF_TYPE_IPV4:
+            return ValueType::kIpv4;
+        case MBPF_TYPE_IPV6:
+            return ValueType::kIpv6;
+        default:
+            return ValueType::kInt;
+        }
+    }
+
+    bool is_ip_type(ValueType type) const
+    {
+        return type == ValueType::kIpv4 || type == ValueType::kIpv6;
+    }
+
+    ValueType resolve_expr_type(const frontend::Expr *expr)
+    {
+        if (!expr) {
+            fail("empty expression node");
+            return ValueType::kBool;
+        }
+
+        switch (expr->kind_) {
+        case frontend::ExprKind::kIdentifier: {
+            const QualifierInfo *info = registry_.find(expr->ident_);
+            if (!info) {
+                fail(MBPF_ERR_QUALIFIER_NOT_FOUND, "qualifier not found: " + expr->ident_);
+                return ValueType::kInt;
+            }
+
+            return qualifier_value_type(info->type_);
+        }
+        case frontend::ExprKind::kInteger:
+            return ValueType::kInt;
+        case frontend::ExprKind::kBoolean:
+            return ValueType::kBool;
+        case frontend::ExprKind::kIpv4:
+            return ValueType::kIpv4;
+        case frontend::ExprKind::kIpv6:
+            return ValueType::kIpv6;
+        case frontend::ExprKind::kNot:
+        case frontend::ExprKind::kAnd:
+        case frontend::ExprKind::kOr:
+        case frontend::ExprKind::kEq:
+        case frontend::ExprKind::kNe:
+        case frontend::ExprKind::kGt:
+        case frontend::ExprKind::kLt:
+        case frontend::ExprKind::kGe:
+        case frontend::ExprKind::kLe:
+            return ValueType::kBool;
+        case frontend::ExprKind::kBitAnd:
+        case frontend::ExprKind::kBitOr:
+            return ValueType::kInt;
+        default:
+            fail("unsupported expression kind");
+            return ValueType::kBool;
+        }
+    }
+
+    uint8_t emit_load_field_reg(uint32_t offset, uint8_t size, uint8_t sign_flag)
+    {
+        auto const dst = alloc_reg();
+        if (!ok_) {
+            return 0;
+        }
+
+        emit(OpCode::kLoadField, dst, size, sign_flag, static_cast<int64_t>(offset));
+        return dst;
+    }
+
     EmitValue emit_identifier(const std::string &name)
     {
         const QualifierInfo *info = registry_.find(name);
         if (!info) {
-            fail("qualifier not found: " + name);
+            fail(MBPF_ERR_QUALIFIER_NOT_FOUND, "qualifier not found: " + name);
             return {0, ValueType::kInt};
         }
 
-        auto const dst = alloc_reg();
-        if (!ok_) {
-            return {0, ValueType::kInt};
+        ValueType value_type = qualifier_value_type(info->type_);
+        if (value_type == ValueType::kIpv6) {
+            fail(MBPF_ERR_TYPE_MISMATCH, "ipv6 values are only supported in == comparisons");
+            return {0, ValueType::kIpv6};
         }
 
-        // c_ = 1 if signed, 0 if unsigned/bool
-        uint8_t sign_flag = is_signed_type(info->type_) ? 1 : 0;
-        emit(OpCode::kLoadField,
-             dst,
-             static_cast<int>(info->size_),
-             sign_flag,
-             static_cast<int64_t>(info->offset_));
-        return {dst, is_bool_type(info->type_) ? ValueType::kBool : ValueType::kInt};
+        uint8_t    sign_flag = is_signed_type(info->type_) ? 1 : 0;
+        auto const dst       = emit_load_field_reg(info->offset_, info->size_, sign_flag);
+        return {dst, value_type};
     }
 
     EmitValue emit_immediate(int64_t value, ValueType type)
@@ -123,10 +215,138 @@ private:
         return {dst, type};
     }
 
+    EmitValue emit_ipv4(const std::string &value)
+    {
+        uint32_t raw = 0;
+        if (inet_pton(AF_INET, value.c_str(), &raw) != 1) {
+            fail(MBPF_ERR_PARSE, "invalid ipv4 literal: " + value);
+            return {0, ValueType::kIpv4};
+        }
+
+        return emit_immediate(static_cast<int64_t>(raw), ValueType::kIpv4);
+    }
+
+    EmitIpv6Value emit_ipv6_literal(const std::string &value)
+    {
+        std::array<uint8_t, 16> bytes = {};
+        if (inet_pton(AF_INET6, value.c_str(), bytes.data()) != 1) {
+            fail(MBPF_ERR_PARSE, "invalid ipv6 literal: " + value);
+            return {0, 0};
+        }
+
+        uint64_t hi = 0;
+        uint64_t lo = 0;
+        std::memcpy(&hi, bytes.data(), sizeof(hi));
+        std::memcpy(&lo, bytes.data() + sizeof(hi), sizeof(lo));
+
+        EmitValue hi_value = emit_immediate(static_cast<int64_t>(hi), ValueType::kInt);
+        EmitValue lo_value = emit_immediate(static_cast<int64_t>(lo), ValueType::kInt);
+        return {hi_value.reg_, lo_value.reg_};
+    }
+
+    EmitIpv6Value emit_ipv6_identifier(const std::string &name)
+    {
+        const QualifierInfo *info = registry_.find(name);
+        if (!info) {
+            fail(MBPF_ERR_QUALIFIER_NOT_FOUND, "qualifier not found: " + name);
+            return {0, 0};
+        }
+
+        if (info->type_ != MBPF_TYPE_IPV6) {
+            fail(MBPF_ERR_TYPE_MISMATCH, "ipv6 comparisons require ipv6 qualifiers");
+            return {0, 0};
+        }
+
+        return {emit_load_field_reg(info->offset_, 8, 0),
+                emit_load_field_reg(info->offset_ + 8, 8, 0)};
+    }
+
+    EmitIpv6Value emit_ipv6_value(const frontend::Expr *expr)
+    {
+        if (!expr) {
+            fail("empty expression node");
+            return {0, 0};
+        }
+
+        switch (expr->kind_) {
+        case frontend::ExprKind::kIdentifier:
+            return emit_ipv6_identifier(expr->ident_);
+        case frontend::ExprKind::kIpv6:
+            return emit_ipv6_literal(expr->text_value_);
+        default:
+            fail(MBPF_ERR_TYPE_MISMATCH, "ipv6 equality requires ipv6 operands");
+            return {0, 0};
+        }
+    }
+
+    EmitValue emit_compare_regs(OpCode op, EmitValue lhs, EmitValue rhs)
+    {
+        auto const dst = alloc_reg();
+        emit(op, dst, lhs.reg_, rhs.reg_, 0);
+        release_reg(lhs.reg_);
+        release_reg(rhs.reg_);
+        return {dst, ValueType::kBool};
+    }
+
+    EmitValue emit_ipv6_compare(OpCode                op,
+                                const frontend::Expr *lhs_expr,
+                                const frontend::Expr *rhs_expr)
+    {
+        EmitIpv6Value lhs = emit_ipv6_value(lhs_expr);
+        EmitIpv6Value rhs = emit_ipv6_value(rhs_expr);
+        if (!ok_) {
+            return {0, ValueType::kBool};
+        }
+
+        EmitValue hi_equal = emit_compare_regs(
+            OpCode::kCmpEq, {lhs.hi_reg_, ValueType::kInt}, {rhs.hi_reg_, ValueType::kInt});
+        EmitValue lo_equal = emit_compare_regs(
+            OpCode::kCmpEq, {lhs.lo_reg_, ValueType::kInt}, {rhs.lo_reg_, ValueType::kInt});
+        if (!ok_) {
+            return {0, ValueType::kBool};
+        }
+
+        auto const dst = alloc_reg();
+        emit(OpCode::kAnd, dst, hi_equal.reg_, lo_equal.reg_, 0);
+        release_reg(hi_equal.reg_);
+        release_reg(lo_equal.reg_);
+
+        if (op == OpCode::kCmpEq) {
+            return {dst, ValueType::kBool};
+        }
+
+        auto const not_dst = alloc_reg();
+        emit(OpCode::kNot, not_dst, dst, 0, 0);
+        release_reg(dst);
+        return {not_dst, ValueType::kBool};
+    }
+
     EmitValue emit_compare(OpCode                op,
                            const frontend::Expr *lhs_expr,
                            const frontend::Expr *rhs_expr)
     {
+        ValueType lhs_type = resolve_expr_type(lhs_expr);
+        ValueType rhs_type = resolve_expr_type(rhs_expr);
+        if (!ok_) {
+            return {0, ValueType::kBool};
+        }
+
+        if (is_ip_type(lhs_type) || is_ip_type(rhs_type)) {
+            if (lhs_type != rhs_type) {
+                fail(MBPF_ERR_TYPE_MISMATCH, "ip comparison operands must have the same type");
+                return {0, ValueType::kBool};
+            }
+
+            if (op != OpCode::kCmpEq && op != OpCode::kCmpNe) {
+                fail(MBPF_ERR_TYPE_MISMATCH, "ip values only support == and != comparisons");
+                return {0, ValueType::kBool};
+            }
+
+            if (lhs_type == ValueType::kIpv6) {
+                return emit_ipv6_compare(op, lhs_expr, rhs_expr);
+            }
+        }
+
         EmitValue lhs = emit_expr(lhs_expr);
         EmitValue rhs = emit_expr(rhs_expr);
         if (!ok_) {
@@ -137,13 +357,12 @@ private:
             rhs = ensure_bool(rhs);
         } else if (lhs.type_ == ValueType::kInt && rhs.type_ == ValueType::kBool) {
             lhs = ensure_bool(lhs);
+        } else if (lhs.type_ != rhs.type_) {
+            fail(MBPF_ERR_TYPE_MISMATCH, "comparison operands must have compatible types");
+            return {0, ValueType::kBool};
         }
 
-        auto const dst = alloc_reg();
-        emit(op, dst, lhs.reg_, rhs.reg_, 0);
-        release_reg(lhs.reg_);
-        release_reg(rhs.reg_);
-        return {dst, ValueType::kBool};
+        return emit_compare_regs(op, lhs, rhs);
     }
 
     EmitValue emit_bitwise(OpCode                op,
@@ -153,6 +372,11 @@ private:
         EmitValue lhs = emit_expr(lhs_expr);
         EmitValue rhs = emit_expr(rhs_expr);
         if (!ok_) {
+            return {0, ValueType::kInt};
+        }
+
+        if (lhs.type_ != ValueType::kInt || rhs.type_ != ValueType::kInt) {
+            fail(MBPF_ERR_TYPE_MISMATCH, "bitwise operators require integer operands");
             return {0, ValueType::kInt};
         }
 
@@ -234,6 +458,11 @@ private:
     {
         if (value.type_ == ValueType::kBool) {
             return value;
+        }
+
+        if (value.type_ != ValueType::kInt) {
+            fail(MBPF_ERR_TYPE_MISMATCH, "logical operators require boolean or integer operands");
+            return {0, ValueType::kBool};
         }
 
         EmitValue  zero = emit_immediate(0, ValueType::kInt);
@@ -324,11 +553,17 @@ private:
 
     void fail(const std::string &message)
     {
+        fail(MBPF_ERR_CODEGEN, message);
+    }
+
+    void fail(int status, const std::string &message)
+    {
         if (!ok_) {
             return;
         }
 
         ok_     = false;
+        status_ = status;
         *error_ = message;
     }
 
@@ -336,6 +571,7 @@ private:
     Program                       *program_;
     std::string                   *error_;
     int                            next_reg_ = 0;
+    int                            status_   = MBPF_ERR_CODEGEN;
     bool                           ok_       = true;
     std::vector<uint8_t>           free_regs_;
     std::bitset<kMaxRegisterCount> reg_used_bitset_;
@@ -358,11 +594,7 @@ int compile_ast_to_program(const frontend::Expr    *root,
 
     Compiler compiler(registry, out_program, out_error);
     if (!compiler.compile(root)) {
-        if (out_error->find("qualifier not found") == 0) {
-            return MBPF_ERR_QUALIFIER_NOT_FOUND;
-        }
-
-        return MBPF_ERR_CODEGEN;
+        return compiler.status();
     }
 
     return MBPF_OK;

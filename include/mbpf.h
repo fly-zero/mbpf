@@ -32,7 +32,9 @@ typedef enum
     MBPF_TYPE_I32,
     MBPF_TYPE_U32,
     MBPF_TYPE_I64,
-    MBPF_TYPE_U64
+    MBPF_TYPE_U64,
+    MBPF_TYPE_IPV4,
+    MBPF_TYPE_IPV6
 } mbpf_type_t;
 
 typedef struct

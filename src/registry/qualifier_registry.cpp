@@ -69,10 +69,13 @@ uint8_t type_size(mbpf_type_t type)
         return 2;
     case MBPF_TYPE_I32:
     case MBPF_TYPE_U32:
+    case MBPF_TYPE_IPV4:
         return 4;
     case MBPF_TYPE_I64:
     case MBPF_TYPE_U64:
         return 8;
+    case MBPF_TYPE_IPV6:
+        return 16;
     default:
         return 0;
     }

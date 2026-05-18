@@ -10,6 +10,8 @@ using mbpf::frontend::make_binary;
 using mbpf::frontend::make_boolean;
 using mbpf::frontend::make_ident;
 using mbpf::frontend::make_integer;
+using mbpf::frontend::make_ipv4;
+using mbpf::frontend::make_ipv6;
 using mbpf::frontend::make_unary;
 using mbpf::frontend::set_parse_error;
 using mbpf::frontend::set_parse_root;
@@ -31,7 +33,7 @@ void yyerror(const char *s);
     mbpf::frontend::Expr *expr;
 }
 
-%token <sval> IDENT
+%token <sval> IDENT IPV4 IPV6
 %token <ival> INTEGER
 %token <bval> BOOLEAN
 %token EQ NE GE LE AND OR
@@ -90,6 +92,14 @@ primary:
     }
   | INTEGER {
         $$ = make_integer($1);
+    }
+  | IPV4 {
+        $$ = make_ipv4($1);
+        free($1);
+    }
+  | IPV6 {
+        $$ = make_ipv6($1);
+        free($1);
     }
   | BOOLEAN {
         $$ = make_boolean($1 != 0);

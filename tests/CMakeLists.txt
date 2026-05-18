@@ -1,6 +1,6 @@
 add_executable(mbpf_tests unit/test_basic.cpp)
 target_link_libraries(mbpf_tests PRIVATE mbpf)
-target_include_directories(mbpf_tests PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(mbpf_tests PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src)
 
 if(MBPF_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mbpf_tests PRIVATE -O0 -g --coverage)

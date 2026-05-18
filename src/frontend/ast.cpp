@@ -38,4 +38,18 @@ Expr *make_boolean(bool value)
     return expr;
 }
 
+Expr *make_ipv4(const std::string &value)
+{
+    auto *expr        = new Expr(ExprKind::kIpv4);
+    expr->text_value_ = value;
+    return expr;
+}
+
+Expr *make_ipv6(const std::string &value)
+{
+    auto *expr        = new Expr(ExprKind::kIpv6);
+    expr->text_value_ = value;
+    return expr;
+}
+
 }  // namespace mbpf::frontend

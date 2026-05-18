@@ -73,13 +73,13 @@ private:
 
         switch (expr->kind_) {
         case frontend::ExprKind::kIdentifier:
-            return emit_identifier(expr->ident_);
+            return emit_identifier(expr->ident());
         case frontend::ExprKind::kInteger:
-            return emit_immediate(expr->int_value_, ValueType::kInt);
+            return emit_immediate(expr->int_value(), ValueType::kInt);
         case frontend::ExprKind::kBoolean:
-            return emit_immediate(expr->bool_value_ ? 1 : 0, ValueType::kBool);
+            return emit_immediate(expr->bool_value() ? 1 : 0, ValueType::kBool);
         case frontend::ExprKind::kIpv4:
-            return emit_ipv4(expr->text_value_);
+            return emit_ipv4(expr->text_value());
         case frontend::ExprKind::kIpv6:
             fail(MBPF_ERR_TYPE_MISMATCH, "ipv6 values are only supported in == comparisons");
             return {0, ValueType::kIpv6};
@@ -139,9 +139,9 @@ private:
 
         switch (expr->kind_) {
         case frontend::ExprKind::kIdentifier: {
-            const QualifierInfo *info = registry_.find(expr->ident_);
+            const QualifierInfo *info = registry_.find(expr->ident());
             if (!info) {
-                fail(MBPF_ERR_QUALIFIER_NOT_FOUND, "qualifier not found: " + expr->ident_);
+                fail(MBPF_ERR_QUALIFIER_NOT_FOUND, "qualifier not found: " + expr->ident());
                 return ValueType::kInt;
             }
 
@@ -270,9 +270,9 @@ private:
 
         switch (expr->kind_) {
         case frontend::ExprKind::kIdentifier:
-            return emit_ipv6_identifier(expr->ident_);
+            return emit_ipv6_identifier(expr->ident());
         case frontend::ExprKind::kIpv6:
-            return emit_ipv6_literal(expr->text_value_);
+            return emit_ipv6_literal(expr->text_value());
         default:
             fail(MBPF_ERR_TYPE_MISMATCH, "ipv6 equality requires ipv6 operands");
             return {0, 0};

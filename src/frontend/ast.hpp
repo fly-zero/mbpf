@@ -1,6 +1,8 @@
 #pragma once
 
+#include <new>
 #include <string>
+#include <type_traits>
 
 namespace mbpf::frontend {
 
@@ -31,24 +33,80 @@ struct Expr
     void operator=(const Expr &) = delete;
     void operator=(Expr &&)      = delete;
 
-    explicit Expr(ExprKind expr_kind)
-        : kind_(expr_kind), left_(nullptr), right_(nullptr), int_value_(0), bool_value_(false)
+    explicit Expr(ExprKind expr_kind) : kind_(expr_kind), left_(nullptr), right_(nullptr)
     {
+    }
+
+    Expr(ExprKind expr_kind, const std::string &value) : Expr(expr_kind)
+    {
+        new (&payload_) std::string(value);
+    }
+
+    Expr(ExprKind expr_kind, long long value) : Expr(expr_kind)
+    {
+        new (&payload_) long long(value);
+    }
+
+    Expr(ExprKind expr_kind, bool value) : Expr(expr_kind)
+    {
+        new (&payload_) bool(value);
     }
 
     ~Expr()
     {
+        if (kind_ == ExprKind::kIdentifier || kind_ == ExprKind::kIpv4 ||
+            kind_ == ExprKind::kIpv6) {
+            string_payload().~basic_string();
+        }
+
         delete left_;
         delete right_;
     }
 
-    ExprKind    kind_;
-    Expr       *left_;
-    Expr       *right_;
-    std::string ident_;
-    std::string text_value_;
-    long long   int_value_;
-    bool        bool_value_;
+    const std::string &ident() const
+    {
+        return string_payload();
+    }
+
+    const std::string &text_value() const
+    {
+        return string_payload();
+    }
+
+    long long int_value() const
+    {
+        return scalar_payload<long long>();
+    }
+
+    bool bool_value() const
+    {
+        return scalar_payload<bool>();
+    }
+
+    ExprKind kind_;
+    Expr    *left_;
+    Expr    *right_;
+
+private:
+    using PayloadStorage = std::aligned_union_t<0, std::string, long long, bool>;
+
+    const std::string &string_payload() const
+    {
+        return *reinterpret_cast<const std::string *>(&payload_);
+    }
+
+    std::string &string_payload()
+    {
+        return *reinterpret_cast<std::string *>(&payload_);
+    }
+
+    template <typename T>
+    const T &scalar_payload() const
+    {
+        return *reinterpret_cast<const T *>(&payload_);
+    }
+
+    PayloadStorage payload_;
 };
 
 Expr *make_binary(ExprKind kind, Expr *lhs, Expr *rhs);

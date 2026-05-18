@@ -487,7 +487,7 @@ TEST(ParserSupportTest, SupportsIpLiterals)
     ASSERT_EQ(ipv4_result.root_->kind_, mbpf::frontend::ExprKind::kEq);
     ASSERT_NE(ipv4_result.root_->right_, nullptr);
     EXPECT_EQ(ipv4_result.root_->right_->kind_, mbpf::frontend::ExprKind::kIpv4);
-    EXPECT_EQ(ipv4_result.root_->right_->text_value_, "192.168.1.1");
+    EXPECT_EQ(ipv4_result.root_->right_->text_value(), "192.168.1.1");
 
     auto ipv6_result = mbpf::frontend::parse_expression("a == 2001:db8::1");
     ASSERT_TRUE(ipv6_result.error_.empty()) << ipv6_result.error_;
@@ -495,7 +495,7 @@ TEST(ParserSupportTest, SupportsIpLiterals)
     ASSERT_EQ(ipv6_result.root_->kind_, mbpf::frontend::ExprKind::kEq);
     ASSERT_NE(ipv6_result.root_->right_, nullptr);
     EXPECT_EQ(ipv6_result.root_->right_->kind_, mbpf::frontend::ExprKind::kIpv6);
-    EXPECT_EQ(ipv6_result.root_->right_->text_value_, "2001:db8::1");
+    EXPECT_EQ(ipv6_result.root_->right_->text_value(), "2001:db8::1");
 }
 
 TEST(IpExpressionTest, SupportsEqualityAndInequality)

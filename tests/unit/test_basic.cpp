@@ -1,8 +1,9 @@
 #include <arpa/inet.h>
+#include <gtest/gtest.h>
 
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -27,10 +28,42 @@ struct IpInput
     uint8_t dst_[16];
 };
 
-mbpf_registry_t *create_default_registry()
+struct RegistryDeleter
 {
-    mbpf_registry_t *reg = mbpf_registry_create();
-    assert(reg);
+    void operator()(mbpf_registry_t *registry) const
+    {
+        if (registry) {
+            mbpf_registry_free(registry);
+        }
+    }
+};
+
+struct ProgramDeleter
+{
+    void operator()(mbpf_program_t *program) const
+    {
+        if (program) {
+            mbpf_program_free(program);
+        }
+    }
+};
+
+using RegistryPtr = std::unique_ptr<mbpf_registry_t, RegistryDeleter>;
+using ProgramPtr  = std::unique_ptr<mbpf_program_t, ProgramDeleter>;
+
+const char *last_error()
+{
+    const char *error = mbpf_last_error();
+    return error ? error : "<no error>";
+}
+
+RegistryPtr create_default_registry()
+{
+    RegistryPtr reg(mbpf_registry_create());
+    if (!reg) {
+        ADD_FAILURE() << "mbpf_registry_create returned null";
+        return {};
+    }
 
     mbpf_qualifier_desc_t qa = {"a", static_cast<uint32_t>(offsetof(Input, a_)), 4, MBPF_TYPE_I32};
     mbpf_qualifier_desc_t qb = {"b", static_cast<uint32_t>(offsetof(Input, b_)), 4, MBPF_TYPE_I32};
@@ -39,19 +72,25 @@ mbpf_registry_t *create_default_registry()
     mbpf_qualifier_desc_t qflag = {
         "flag", static_cast<uint32_t>(offsetof(Input, flag_)), 1, MBPF_TYPE_BOOL};
 
-    assert(mbpf_register_qualifier(reg, &qa) == MBPF_OK);
-    assert(mbpf_register_qualifier(reg, &qb) == MBPF_OK);
-    assert(mbpf_register_qualifier(reg, &qc) == MBPF_OK);
-    assert(mbpf_register_qualifier(reg, &qd) == MBPF_OK);
-    assert(mbpf_register_qualifier(reg, &qflag) == MBPF_OK);
+    if (mbpf_register_qualifier(reg.get(), &qa) != MBPF_OK ||
+        mbpf_register_qualifier(reg.get(), &qb) != MBPF_OK ||
+        mbpf_register_qualifier(reg.get(), &qc) != MBPF_OK ||
+        mbpf_register_qualifier(reg.get(), &qd) != MBPF_OK ||
+        mbpf_register_qualifier(reg.get(), &qflag) != MBPF_OK) {
+        ADD_FAILURE() << "failed to create default registry: " << last_error();
+        return {};
+    }
 
     return reg;
 }
 
-mbpf_registry_t *create_ip_registry()
+RegistryPtr create_ip_registry()
 {
-    mbpf_registry_t *reg = mbpf_registry_create();
-    assert(reg);
+    RegistryPtr reg(mbpf_registry_create());
+    if (!reg) {
+        ADD_FAILURE() << "mbpf_registry_create returned null";
+        return {};
+    }
 
     mbpf_qualifier_desc_t qsrc = {
         "src", static_cast<uint32_t>(offsetof(IpInput, src_)), 4, MBPF_TYPE_IPV4};
@@ -60,48 +99,56 @@ mbpf_registry_t *create_ip_registry()
     mbpf_qualifier_desc_t qdst = {
         "dst", static_cast<uint32_t>(offsetof(IpInput, dst_)), 16, MBPF_TYPE_IPV6};
 
-    assert(mbpf_register_qualifier(reg, &qsrc) == MBPF_OK);
-    assert(mbpf_register_qualifier(reg, &qpeer) == MBPF_OK);
-    assert(mbpf_register_qualifier(reg, &qdst) == MBPF_OK);
+    if (mbpf_register_qualifier(reg.get(), &qsrc) != MBPF_OK ||
+        mbpf_register_qualifier(reg.get(), &qpeer) != MBPF_OK ||
+        mbpf_register_qualifier(reg.get(), &qdst) != MBPF_OK) {
+        ADD_FAILURE() << "failed to create ip registry: " << last_error();
+        return {};
+    }
 
     return reg;
 }
 
 void fill_ipv4(uint8_t (&out)[4], const char *value)
 {
-    assert(inet_pton(AF_INET, value, out) == 1);
+    ASSERT_EQ(inet_pton(AF_INET, value, out), 1) << value;
 }
 
 void fill_ipv6(uint8_t (&out)[16], const char *value)
 {
-    assert(inet_pton(AF_INET6, value, out) == 1);
+    ASSERT_EQ(inet_pton(AF_INET6, value, out), 1) << value;
 }
 
 template <typename T>
-void assert_expr_result(mbpf_registry_t *reg, const char *expr, const T &in, bool expected)
+void expect_expr_result(mbpf_registry_t *reg, const char *expr, const T &in, bool expected)
 {
-    mbpf_program_t *program = nullptr;
-    assert(mbpf_compile_expression(reg, expr, nullptr, &program) == MBPF_OK);
-    assert(program);
+    mbpf_program_t *raw_program = nullptr;
+    ASSERT_EQ(mbpf_compile_expression(reg, expr, nullptr, &raw_program), MBPF_OK)
+        << last_error() << " for expression: " << expr;
+    ProgramPtr program(raw_program);
+    ASSERT_NE(program.get(), nullptr);
 
     bool out = !expected;
-    assert(mbpf_execute(program, &in, &out) == MBPF_OK);
-    assert(out == expected);
-
-    mbpf_program_free(program);
+    ASSERT_EQ(mbpf_execute(program.get(), &in, &out), MBPF_OK)
+        << last_error() << " for expression: " << expr;
+    EXPECT_EQ(out, expected) << expr;
 }
 
-void assert_compile_status(mbpf_registry_t *reg, const char *expr, int expected)
+void expect_compile_status(mbpf_registry_t *reg, const char *expr, int expected)
 {
-    mbpf_program_t *program = nullptr;
-    assert(mbpf_compile_expression(reg, expr, nullptr, &program) == expected);
-    assert(program == nullptr);
+    mbpf_program_t *raw_program = nullptr;
+    EXPECT_EQ(mbpf_compile_expression(reg, expr, nullptr, &raw_program), expected)
+        << last_error() << " for expression: " << expr;
+    EXPECT_EQ(raw_program, nullptr);
+    if (raw_program) {
+        mbpf_program_free(raw_program);
+    }
 }
 
-void test_register_validation()
+TEST(RegistryTest, ValidatesRegistrationArguments)
 {
-    mbpf_registry_t *reg = mbpf_registry_create();
-    assert(reg);
+    RegistryPtr reg(mbpf_registry_create());
+    ASSERT_NE(reg.get(), nullptr);
 
     mbpf_qualifier_desc_t qa        = {"a", 0, 4, MBPF_TYPE_I32};
     mbpf_qualifier_desc_t qbad_size = {"bad_size", 4, 8, MBPF_TYPE_I32};
@@ -109,88 +156,85 @@ void test_register_validation()
     mbpf_qualifier_desc_t qbad_ipv4 = {"bad_ipv4", 8, 8, MBPF_TYPE_IPV4};
     mbpf_qualifier_desc_t qbad_ipv6 = {"bad_ipv6", 16, 8, MBPF_TYPE_IPV6};
 
-    assert(mbpf_register_qualifier(nullptr, &qa) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_register_qualifier(reg, nullptr) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_register_qualifier(reg, &qa) == MBPF_OK);
-    assert(mbpf_register_qualifier(reg, &qa) == MBPF_ERR_DUP_QUALIFIER);
-    assert(mbpf_register_qualifier(reg, &qbad_size) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_register_qualifier(reg, &qbad_ipv4) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_register_qualifier(reg, &qbad_ipv6) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_register_qualifier(reg, &qoverflow) == MBPF_ERR_INVALID_ARG);
-
-    mbpf_registry_free(reg);
+    EXPECT_EQ(mbpf_register_qualifier(nullptr, &qa), MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_register_qualifier(reg.get(), nullptr), MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_register_qualifier(reg.get(), &qa), MBPF_OK);
+    EXPECT_EQ(mbpf_register_qualifier(reg.get(), &qa), MBPF_ERR_DUP_QUALIFIER);
+    EXPECT_EQ(mbpf_register_qualifier(reg.get(), &qbad_size), MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_register_qualifier(reg.get(), &qbad_ipv4), MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_register_qualifier(reg.get(), &qbad_ipv6), MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_register_qualifier(reg.get(), &qoverflow), MBPF_ERR_INVALID_ARG);
 }
 
-void test_all_comparison_operators()
+TEST(ExpressionTest, SupportsComparisonOperators)
 {
-    mbpf_registry_t *reg = create_default_registry();
-    Input            in  = {5, 5, 3, 7, 1};
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
-    assert_expr_result(reg, "a == b", in, true);
-    assert_expr_result(reg, "a != c", in, true);
-    assert_expr_result(reg, "a > c", in, true);
-    assert_expr_result(reg, "c < a", in, true);
-    assert_expr_result(reg, "a >= b", in, true);
-    assert_expr_result(reg, "c <= b", in, true);
+    Input in = {5, 5, 3, 7, 1};
 
-    assert_expr_result(reg, "a == c", in, false);
-    assert_expr_result(reg, "a < c", in, false);
-    assert_expr_result(reg, "c >= d", in, false);
+    expect_expr_result(reg.get(), "a == b", in, true);
+    expect_expr_result(reg.get(), "a != c", in, true);
+    expect_expr_result(reg.get(), "a > c", in, true);
+    expect_expr_result(reg.get(), "c < a", in, true);
+    expect_expr_result(reg.get(), "a >= b", in, true);
+    expect_expr_result(reg.get(), "c <= b", in, true);
 
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "a == c", in, false);
+    expect_expr_result(reg.get(), "a < c", in, false);
+    expect_expr_result(reg.get(), "c >= d", in, false);
 }
 
-void test_all_logical_operators()
+TEST(ExpressionTest, SupportsLogicalOperators)
 {
-    mbpf_registry_t *reg = create_default_registry();
-    Input            in  = {2, 1, 0, -1, 1};
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
-    assert_expr_result(reg, "true", in, true);
-    assert_expr_result(reg, "false", in, false);
-    assert_expr_result(reg, "!false", in, true);
-    assert_expr_result(reg, "!true", in, false);
-    assert_expr_result(reg, "true && false", in, false);
-    assert_expr_result(reg, "true || false", in, true);
-    assert_expr_result(reg, "flag && (a > 1)", in, true);
-    assert_expr_result(reg, "flag && (a < 1)", in, false);
+    Input in = {2, 1, 0, -1, 1};
 
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "true", in, true);
+    expect_expr_result(reg.get(), "false", in, false);
+    expect_expr_result(reg.get(), "!false", in, true);
+    expect_expr_result(reg.get(), "!true", in, false);
+    expect_expr_result(reg.get(), "true && false", in, false);
+    expect_expr_result(reg.get(), "true || false", in, true);
+    expect_expr_result(reg.get(), "flag && (a > 1)", in, true);
+    expect_expr_result(reg.get(), "flag && (a < 1)", in, false);
 }
 
-void test_precedence_levels()
+TEST(ExpressionTest, RespectsPrecedenceLevels)
 {
-    mbpf_registry_t *reg = create_default_registry();
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
     Input i1 = {2, 0, 0, 0, 0};
     Input i2 = {0, 3, 4, 0, 0};
     Input i3 = {0, 3, 0, 0, 0};
 
-    assert_expr_result(reg, "a > 1 || b > 2 && c > 3", i1, true);
-    assert_expr_result(reg, "a > 1 || b > 2 && c > 3", i2, true);
-    assert_expr_result(reg, "a > 1 || b > 2 && c > 3", i3, false);
+    expect_expr_result(reg.get(), "a > 1 || b > 2 && c > 3", i1, true);
+    expect_expr_result(reg.get(), "a > 1 || b > 2 && c > 3", i2, true);
+    expect_expr_result(reg.get(), "a > 1 || b > 2 && c > 3", i3, false);
 
-    assert_expr_result(reg, "!false || false && false", i1, true);
-    assert_expr_result(reg, "!(a > 1) || b > 2 && c > 3", i2, true);
-
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "!false || false && false", i1, true);
+    expect_expr_result(reg.get(), "!(a > 1) || b > 2 && c > 3", i2, true);
 }
 
-void test_parentheses_override_precedence()
+TEST(ExpressionTest, ParenthesesOverridePrecedence)
 {
-    mbpf_registry_t *reg = create_default_registry();
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
     Input in = {2, 0, 0, 0, 0};
-    assert_expr_result(reg, "a > 1 || b > 2 && c > 3", in, true);
-    assert_expr_result(reg, "(a > 1 || b > 2) && c > 3", in, false);
-    assert_expr_result(reg, "!(a > 1 && b < 2)", in, false);
-    assert_expr_result(reg, "!((a > 1) && (b < 2))", in, false);
-
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "a > 1 || b > 2 && c > 3", in, true);
+    expect_expr_result(reg.get(), "(a > 1 || b > 2) && c > 3", in, false);
+    expect_expr_result(reg.get(), "!(a > 1 && b < 2)", in, false);
+    expect_expr_result(reg.get(), "!((a > 1) && (b < 2))", in, false);
 }
 
-void test_short_circuit_semantics()
+TEST(ExpressionTest, PreservesShortCircuitSemantics)
 {
-    mbpf_registry_t *reg = create_default_registry();
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
     Input and_left_false = {1, -1, 0, 0, 0};
     Input and_left_true  = {20, -1, 0, 0, 0};
@@ -198,328 +242,302 @@ void test_short_circuit_semantics()
     Input or_left_false  = {1, -1, 0, 0, 0};
     Input or_both_false  = {1, 1, 0, 0, 0};
 
-    assert_expr_result(reg, "a > 10 && b < 0", and_left_false, false);
-    assert_expr_result(reg, "a > 10 && b < 0", and_left_true, true);
-
-    assert_expr_result(reg, "a > 10 || b < 0", or_left_true, true);
-    assert_expr_result(reg, "a > 10 || b < 0", or_left_false, true);
-    assert_expr_result(reg, "a > 10 || b < 0", or_both_false, false);
-
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "a > 10 && b < 0", and_left_false, false);
+    expect_expr_result(reg.get(), "a > 10 && b < 0", and_left_true, true);
+    expect_expr_result(reg.get(), "a > 10 || b < 0", or_left_true, true);
+    expect_expr_result(reg.get(), "a > 10 || b < 0", or_left_false, true);
+    expect_expr_result(reg.get(), "a > 10 || b < 0", or_both_false, false);
 }
 
-void test_literals_and_constant_expressions()
+TEST(ExpressionTest, SupportsLiteralAndConstantExpressions)
 {
-    mbpf_registry_t *reg = create_default_registry();
-    Input            in  = {0, 0, 0, 0, 0};
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
-    assert_expr_result(reg, "1 < 2", in, true);
-    assert_expr_result(reg, "1 > 2", in, false);
-    assert_expr_result(reg, "1 <= 1 && 3 >= 3", in, true);
-    assert_expr_result(reg, "1 != 1 || false", in, false);
-    assert_expr_result(reg, "(true || false) && !false", in, true);
+    Input in = {0, 0, 0, 0, 0};
 
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "1 < 2", in, true);
+    expect_expr_result(reg.get(), "1 > 2", in, false);
+    expect_expr_result(reg.get(), "1 <= 1 && 3 >= 3", in, true);
+    expect_expr_result(reg.get(), "1 != 1 || false", in, false);
+    expect_expr_result(reg.get(), "(true || false) && !false", in, true);
 }
 
-void test_compile_failures()
+TEST(CompileTest, ReportsCompileFailures)
 {
-    mbpf_registry_t *reg = create_default_registry();
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
-    mbpf_program_t *program = nullptr;
+    mbpf_program_t *raw_program = nullptr;
 
-    assert(mbpf_compile_expression(reg, "unknown > 1", nullptr, &program) ==
-           MBPF_ERR_QUALIFIER_NOT_FOUND);
-    assert(!program);
+    EXPECT_EQ(mbpf_compile_expression(reg.get(), "unknown > 1", nullptr, &raw_program),
+              MBPF_ERR_QUALIFIER_NOT_FOUND);
+    EXPECT_EQ(raw_program, nullptr);
 
-    assert(mbpf_compile_expression(reg, "", nullptr, &program) == MBPF_ERR_PARSE);
-    assert(!program);
+    EXPECT_EQ(mbpf_compile_expression(reg.get(), "", nullptr, &raw_program), MBPF_ERR_PARSE);
+    EXPECT_EQ(raw_program, nullptr);
 
-    assert(mbpf_compile_expression(reg, "(a > 1", nullptr, &program) == MBPF_ERR_PARSE);
-    assert(!program);
+    EXPECT_EQ(mbpf_compile_expression(reg.get(), "(a > 1", nullptr, &raw_program), MBPF_ERR_PARSE);
+    EXPECT_EQ(raw_program, nullptr);
 
-    assert(mbpf_compile_expression(reg, "a >>> 1", nullptr, &program) == MBPF_ERR_PARSE);
-    assert(!program);
+    EXPECT_EQ(mbpf_compile_expression(reg.get(), "a >>> 1", nullptr, &raw_program), MBPF_ERR_PARSE);
+    EXPECT_EQ(raw_program, nullptr);
 
-    assert(mbpf_compile_expression(reg, "a > && b < 2", nullptr, &program) == MBPF_ERR_PARSE);
-    assert(!program);
-
-    mbpf_registry_free(reg);
+    EXPECT_EQ(mbpf_compile_expression(reg.get(), "a > && b < 2", nullptr, &raw_program),
+              MBPF_ERR_PARSE);
+    EXPECT_EQ(raw_program, nullptr);
 }
 
-void test_compile_options_and_api_args()
+TEST(ApiTest, SupportsCompileOptionsAndArgumentValidation)
 {
-    mbpf_registry_t *reg     = create_default_registry();
-    mbpf_program_t  *program = nullptr;
-    Input            in      = {3, 1, 0, 0, 1};
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
+
+    mbpf_program_t *raw_program = nullptr;
+    Input           in          = {3, 1, 0, 0, 1};
 
     mbpf_compile_options_t options = {true, true, true};
-    assert(mbpf_compile_expression(reg, "a > 1 && b < 2", &options, &program) == MBPF_OK);
-    assert(program);
+    ASSERT_EQ(mbpf_compile_expression(reg.get(), "a > 1 && b < 2", &options, &raw_program), MBPF_OK)
+        << last_error();
+    ProgramPtr program(raw_program);
+    ASSERT_NE(program.get(), nullptr);
 
     bool out = false;
-    assert(mbpf_execute(program, &in, &out) == MBPF_OK);
-    assert(out == true);
+    ASSERT_EQ(mbpf_execute(program.get(), &in, &out), MBPF_OK) << last_error();
+    EXPECT_TRUE(out);
 
-    assert(mbpf_compile_expression(nullptr, "a > 1", nullptr, &program) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_compile_expression(reg, nullptr, nullptr, &program) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_compile_expression(reg, "a > 1", nullptr, nullptr) == MBPF_ERR_INVALID_ARG);
+    mbpf_program_t *unused_program = nullptr;
+    EXPECT_EQ(mbpf_compile_expression(nullptr, "a > 1", nullptr, &unused_program),
+              MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_compile_expression(reg.get(), nullptr, nullptr, &unused_program),
+              MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_compile_expression(reg.get(), "a > 1", nullptr, nullptr), MBPF_ERR_INVALID_ARG);
 
-    assert(mbpf_execute(nullptr, &in, &out) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_execute(program, nullptr, &out) == MBPF_ERR_INVALID_ARG);
-    assert(mbpf_execute(program, &in, nullptr) == MBPF_ERR_INVALID_ARG);
-
-    mbpf_program_free(program);
-    mbpf_registry_free(reg);
+    EXPECT_EQ(mbpf_execute(nullptr, &in, &out), MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_execute(program.get(), nullptr, &out), MBPF_ERR_INVALID_ARG);
+    EXPECT_EQ(mbpf_execute(program.get(), &in, nullptr), MBPF_ERR_INVALID_ARG);
 }
 
-void test_execute_same_program_multiple_times()
+TEST(ExpressionTest, ExecutesSameProgramMultipleTimes)
 {
-    mbpf_registry_t *reg     = create_default_registry();
-    mbpf_program_t  *program = nullptr;
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
-    assert(mbpf_compile_expression(reg, "a > b", nullptr, &program) == MBPF_OK);
-    assert(program);
+    mbpf_program_t *raw_program = nullptr;
+    ASSERT_EQ(mbpf_compile_expression(reg.get(), "a > b", nullptr, &raw_program), MBPF_OK)
+        << last_error();
+    ProgramPtr program(raw_program);
+    ASSERT_NE(program.get(), nullptr);
 
     Input in1 = {5, 2, 0, 0, 0};
     Input in2 = {1, 3, 0, 0, 0};
     Input in3 = {9, 9, 0, 0, 0};
 
     bool out = false;
-    assert(mbpf_execute(program, &in1, &out) == MBPF_OK);
-    assert(out == true);
+    ASSERT_EQ(mbpf_execute(program.get(), &in1, &out), MBPF_OK);
+    EXPECT_TRUE(out);
 
-    assert(mbpf_execute(program, &in2, &out) == MBPF_OK);
-    assert(out == false);
+    ASSERT_EQ(mbpf_execute(program.get(), &in2, &out), MBPF_OK);
+    EXPECT_FALSE(out);
 
-    assert(mbpf_execute(program, &in3, &out) == MBPF_OK);
-    assert(out == false);
-
-    mbpf_program_free(program);
-    mbpf_registry_free(reg);
+    ASSERT_EQ(mbpf_execute(program.get(), &in3, &out), MBPF_OK);
+    EXPECT_FALSE(out);
 }
 
-void test_long_expression_register_reuse()
+TEST(ExpressionTest, ReusesRegistersInLongExpressions)
 {
-    mbpf_registry_t *reg = create_default_registry();
-    Input            in  = {7, 0, 0, 0, 1};
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
-    // Long left-associated chain used to regress when codegen only increased register ids.
+    Input       in   = {7, 0, 0, 0, 1};
     std::string expr = "(a > 0)";
     for (int i = 0; i < 1500; ++i) {
         expr += " && (a > 0)";
     }
 
-    assert_expr_result(reg, expr.c_str(), in, true);
-
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), expr.c_str(), in, true);
 }
 
-void test_program_serialize_deserialize_roundtrip()
+TEST(SerializationTest, SupportsSerializeDeserializeRoundTrip)
 {
-    mbpf_registry_t *reg     = create_default_registry();
-    mbpf_program_t  *program = nullptr;
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
-    assert(mbpf_compile_expression(reg, "(a > 2 && b < 5) || flag", nullptr, &program) == MBPF_OK);
-    assert(program);
+    mbpf_program_t *raw_program = nullptr;
+    ASSERT_EQ(mbpf_compile_expression(reg.get(), "(a > 2 && b < 5) || flag", nullptr, &raw_program),
+              MBPF_OK)
+        << last_error();
+    ProgramPtr program(raw_program);
+    ASSERT_NE(program.get(), nullptr);
 
     size_t serialized_size = 0;
-    assert(mbpf_program_serialize(program, nullptr, &serialized_size) == MBPF_OK);
-    assert(serialized_size > 0);
+    ASSERT_EQ(mbpf_program_serialize(program.get(), nullptr, &serialized_size), MBPF_OK);
+    ASSERT_GT(serialized_size, 0u);
 
     std::vector<uint8_t> blob(serialized_size);
     size_t               io_size = blob.size();
-    assert(mbpf_program_serialize(program, blob.data(), &io_size) == MBPF_OK);
-    assert(io_size == blob.size());
+    ASSERT_EQ(mbpf_program_serialize(program.get(), blob.data(), &io_size), MBPF_OK);
+    ASSERT_EQ(io_size, blob.size());
 
-    mbpf_program_t *loaded = nullptr;
-    assert(mbpf_program_deserialize(blob.data(), blob.size(), &loaded) == MBPF_OK);
-    assert(loaded);
+    mbpf_program_t *raw_loaded = nullptr;
+    ASSERT_EQ(mbpf_program_deserialize(blob.data(), blob.size(), &raw_loaded), MBPF_OK);
+    ProgramPtr loaded(raw_loaded);
+    ASSERT_NE(loaded.get(), nullptr);
 
     Input in_true  = {3, 2, 0, 0, 0};
     Input in_false = {1, 9, 0, 0, 0};
 
     bool out = false;
-    assert(mbpf_execute(loaded, &in_true, &out) == MBPF_OK);
-    assert(out == true);
+    ASSERT_EQ(mbpf_execute(loaded.get(), &in_true, &out), MBPF_OK);
+    EXPECT_TRUE(out);
 
     out = true;
-    assert(mbpf_execute(loaded, &in_false, &out) == MBPF_OK);
-    assert(out == false);
-
-    mbpf_program_free(loaded);
-    mbpf_program_free(program);
-    mbpf_registry_free(reg);
+    ASSERT_EQ(mbpf_execute(loaded.get(), &in_false, &out), MBPF_OK);
+    EXPECT_FALSE(out);
 }
 
-void test_program_deserialize_invalid_blob()
+TEST(SerializationTest, RejectsInvalidBlob)
 {
-    mbpf_program_t      *loaded = nullptr;
+    mbpf_program_t      *raw_loaded = nullptr;
     std::vector<uint8_t> bad_blob(16, 0);
 
-    assert(mbpf_program_deserialize(bad_blob.data(), bad_blob.size(), &loaded) ==
-           MBPF_ERR_VERIFICATION);
-    assert(loaded == nullptr);
+    EXPECT_EQ(mbpf_program_deserialize(bad_blob.data(), bad_blob.size(), &raw_loaded),
+              MBPF_ERR_VERIFICATION);
+    EXPECT_EQ(raw_loaded, nullptr);
 }
 
-void test_program_deserialize_to_memory_roundtrip()
+TEST(SerializationTest, SupportsDeserializeToMemoryRoundTrip)
 {
-    mbpf_registry_t *reg     = create_default_registry();
-    mbpf_program_t  *program = nullptr;
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
-    assert(mbpf_compile_expression(reg, "(a > 2 && b < 5) || flag", nullptr, &program) == MBPF_OK);
-    assert(program);
+    mbpf_program_t *raw_program = nullptr;
+    ASSERT_EQ(mbpf_compile_expression(reg.get(), "(a > 2 && b < 5) || flag", nullptr, &raw_program),
+              MBPF_OK)
+        << last_error();
+    ProgramPtr program(raw_program);
+    ASSERT_NE(program.get(), nullptr);
 
     size_t serialized_size = 0;
-    assert(mbpf_program_serialize(program, nullptr, &serialized_size) == MBPF_OK);
-    assert(serialized_size > 0);
+    ASSERT_EQ(mbpf_program_serialize(program.get(), nullptr, &serialized_size), MBPF_OK);
+    ASSERT_GT(serialized_size, 0u);
 
     std::vector<uint8_t> blob(serialized_size);
     size_t               io_size = blob.size();
-    assert(mbpf_program_serialize(program, blob.data(), &io_size) == MBPF_OK);
-    assert(io_size == blob.size());
+    ASSERT_EQ(mbpf_program_serialize(program.get(), blob.data(), &io_size), MBPF_OK);
+    ASSERT_EQ(io_size, blob.size());
 
-    size_t          memory_size     = 0;
-    mbpf_program_t *inplace_program = nullptr;
-    assert(mbpf_program_deserialize_to_memory(
-               blob.data(), blob.size(), nullptr, &memory_size, &inplace_program) == MBPF_OK);
-    assert(memory_size > 0);
-    assert(inplace_program == nullptr);
+    size_t          memory_size = 0;
+    mbpf_program_t *raw_inplace = nullptr;
+    ASSERT_EQ(mbpf_program_deserialize_to_memory(
+                  blob.data(), blob.size(), nullptr, &memory_size, &raw_inplace),
+              MBPF_OK);
+    ASSERT_GT(memory_size, 0u);
+    ASSERT_EQ(raw_inplace, nullptr);
 
     std::vector<uint8_t> program_memory(memory_size);
     size_t               memory_io_size = program_memory.size();
-    assert(
-        mbpf_program_deserialize_to_memory(
-            blob.data(), blob.size(), program_memory.data(), &memory_io_size, &inplace_program) ==
-        MBPF_OK);
-    assert(memory_io_size == program_memory.size());
-    assert(inplace_program != nullptr);
+    ASSERT_EQ(mbpf_program_deserialize_to_memory(
+                  blob.data(), blob.size(), program_memory.data(), &memory_io_size, &raw_inplace),
+              MBPF_OK);
+    ASSERT_EQ(memory_io_size, program_memory.size());
+    ProgramPtr inplace_program(raw_inplace);
+    ASSERT_NE(inplace_program.get(), nullptr);
 
     Input in_true  = {3, 2, 0, 0, 0};
     Input in_false = {1, 9, 0, 0, 0};
 
     bool out = false;
-    assert(mbpf_execute(inplace_program, &in_true, &out) == MBPF_OK);
-    assert(out == true);
+    ASSERT_EQ(mbpf_execute(inplace_program.get(), &in_true, &out), MBPF_OK);
+    EXPECT_TRUE(out);
 
     out = true;
-    assert(mbpf_execute(inplace_program, &in_false, &out) == MBPF_OK);
-    assert(out == false);
-
-    mbpf_program_free(inplace_program);
-    mbpf_program_free(program);
-    mbpf_registry_free(reg);
+    ASSERT_EQ(mbpf_execute(inplace_program.get(), &in_false, &out), MBPF_OK);
+    EXPECT_FALSE(out);
 }
 
-void test_hexadecimal_support()
+TEST(ExpressionTest, SupportsHexadecimalLiterals)
 {
-    mbpf_registry_t *reg = create_default_registry();
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
     Input input = {0x1234, 0, 0, 0, 0};
-    assert_expr_result(reg, "a == 0x1234", input, true);
-    assert_expr_result(reg, "a == 0x5678", input, false);
-
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "a == 0x1234", input, true);
+    expect_expr_result(reg.get(), "a == 0x5678", input, false);
 }
 
-void test_bitwise_operators()
+TEST(ExpressionTest, SupportsBitwiseOperators)
 {
-    mbpf_registry_t *reg = create_default_registry();
+    auto reg = create_default_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
     Input input = {0x1205, 0x1200, 0x0005, 0, 0};
-    assert_expr_result(reg, "(a & 0x00FF) == 5", input, true);
-    assert_expr_result(reg, "(a & 0x0F00) == 0x0200", input, true);
-    assert_expr_result(reg, "(a & 0x00FF) == 6", input, false);
-    assert_expr_result(reg, "(b | c) == a", input, true);
-    assert_expr_result(reg, "(b | 0x0001) == a", input, false);
-
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "(a & 0x00FF) == 5", input, true);
+    expect_expr_result(reg.get(), "(a & 0x0F00) == 0x0200", input, true);
+    expect_expr_result(reg.get(), "(a & 0x00FF) == 6", input, false);
+    expect_expr_result(reg.get(), "(b | c) == a", input, true);
+    expect_expr_result(reg.get(), "(b | 0x0001) == a", input, false);
 }
 
-void test_ip_literal_parser_support()
+TEST(ParserSupportTest, SupportsIpLiterals)
 {
     auto ipv4_result = mbpf::frontend::parse_expression("a == 192.168.1.1");
-    assert(ipv4_result.error_.empty());
-    assert(ipv4_result.root_);
-    assert(ipv4_result.root_->kind_ == mbpf::frontend::ExprKind::kEq);
-    assert(ipv4_result.root_->right_);
-    assert(ipv4_result.root_->right_->kind_ == mbpf::frontend::ExprKind::kIpv4);
-    assert(ipv4_result.root_->right_->text_value_ == "192.168.1.1");
+    ASSERT_TRUE(ipv4_result.error_.empty()) << ipv4_result.error_;
+    ASSERT_NE(ipv4_result.root_, nullptr);
+    ASSERT_EQ(ipv4_result.root_->kind_, mbpf::frontend::ExprKind::kEq);
+    ASSERT_NE(ipv4_result.root_->right_, nullptr);
+    EXPECT_EQ(ipv4_result.root_->right_->kind_, mbpf::frontend::ExprKind::kIpv4);
+    EXPECT_EQ(ipv4_result.root_->right_->text_value_, "192.168.1.1");
 
     auto ipv6_result = mbpf::frontend::parse_expression("a == 2001:db8::1");
-    assert(ipv6_result.error_.empty());
-    assert(ipv6_result.root_);
-    assert(ipv6_result.root_->kind_ == mbpf::frontend::ExprKind::kEq);
-    assert(ipv6_result.root_->right_);
-    assert(ipv6_result.root_->right_->kind_ == mbpf::frontend::ExprKind::kIpv6);
-    assert(ipv6_result.root_->right_->text_value_ == "2001:db8::1");
+    ASSERT_TRUE(ipv6_result.error_.empty()) << ipv6_result.error_;
+    ASSERT_NE(ipv6_result.root_, nullptr);
+    ASSERT_EQ(ipv6_result.root_->kind_, mbpf::frontend::ExprKind::kEq);
+    ASSERT_NE(ipv6_result.root_->right_, nullptr);
+    EXPECT_EQ(ipv6_result.root_->right_->kind_, mbpf::frontend::ExprKind::kIpv6);
+    EXPECT_EQ(ipv6_result.root_->right_->text_value_, "2001:db8::1");
 }
 
-void test_ip_equality_support()
+TEST(IpExpressionTest, SupportsEqualityAndInequality)
 {
-    mbpf_registry_t *reg = create_ip_registry();
+    auto reg = create_ip_registry();
+    ASSERT_NE(reg.get(), nullptr);
 
     IpInput input = {};
     fill_ipv4(input.src_, "192.168.1.1");
     fill_ipv4(input.peer_, "10.0.0.1");
     fill_ipv6(input.dst_, "2001:db8::1");
 
-    assert_expr_result(reg, "src == 192.168.1.1", input, true);
-    assert_expr_result(reg, "src == 10.0.0.1", input, false);
-    assert_expr_result(reg, "src != 192.168.1.1", input, false);
-    assert_expr_result(reg, "src != 10.0.0.1", input, true);
-    assert_expr_result(reg, "peer == 10.0.0.1", input, true);
-    assert_expr_result(reg, "peer != 10.0.0.1", input, false);
-    assert_expr_result(reg, "dst == 2001:db8::1", input, true);
-    assert_expr_result(reg, "dst == 2001:db8::2", input, false);
-    assert_expr_result(reg, "dst != 2001:db8::1", input, false);
-    assert_expr_result(reg, "dst != 2001:db8::2", input, true);
-
-    mbpf_registry_free(reg);
+    expect_expr_result(reg.get(), "src == 192.168.1.1", input, true);
+    expect_expr_result(reg.get(), "src == 10.0.0.1", input, false);
+    expect_expr_result(reg.get(), "src != 192.168.1.1", input, false);
+    expect_expr_result(reg.get(), "src != 10.0.0.1", input, true);
+    expect_expr_result(reg.get(), "peer == 10.0.0.1", input, true);
+    expect_expr_result(reg.get(), "peer != 10.0.0.1", input, false);
+    expect_expr_result(reg.get(), "dst == 2001:db8::1", input, true);
+    expect_expr_result(reg.get(), "dst == 2001:db8::2", input, false);
+    expect_expr_result(reg.get(), "dst != 2001:db8::1", input, false);
+    expect_expr_result(reg.get(), "dst != 2001:db8::2", input, true);
 }
 
-void test_ip_type_mismatch_failures()
+TEST(IpExpressionTest, RejectsTypeMismatchAndUnsupportedOperators)
 {
-    mbpf_registry_t *default_reg = create_default_registry();
-    assert_compile_status(default_reg, "a == 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(default_reg, "a == 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(default_reg, "a != 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(default_reg, "a != 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
-    mbpf_registry_free(default_reg);
+    auto default_reg = create_default_registry();
+    ASSERT_NE(default_reg.get(), nullptr);
+    expect_compile_status(default_reg.get(), "a == 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(default_reg.get(), "a == 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(default_reg.get(), "a != 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(default_reg.get(), "a != 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
 
-    mbpf_registry_t *ip_reg = create_ip_registry();
-    assert_compile_status(ip_reg, "src > 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(ip_reg, "dst > 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(ip_reg, "src == 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(ip_reg, "src != 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(ip_reg, "dst == 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(ip_reg, "dst != 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
-    assert_compile_status(ip_reg, "flag && src", MBPF_ERR_QUALIFIER_NOT_FOUND);
-    mbpf_registry_free(ip_reg);
+    auto ip_reg = create_ip_registry();
+    ASSERT_NE(ip_reg.get(), nullptr);
+    expect_compile_status(ip_reg.get(), "src > 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(ip_reg.get(), "dst > 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(ip_reg.get(), "src == 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(ip_reg.get(), "src != 2001:db8::1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(ip_reg.get(), "dst == 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(ip_reg.get(), "dst != 192.168.1.1", MBPF_ERR_TYPE_MISMATCH);
+    expect_compile_status(ip_reg.get(), "flag && src", MBPF_ERR_QUALIFIER_NOT_FOUND);
 }
 
 }  // namespace
-
-int main()
-{
-    test_register_validation();
-    test_all_comparison_operators();
-    test_all_logical_operators();
-    test_precedence_levels();
-    test_parentheses_override_precedence();
-    test_short_circuit_semantics();
-    test_literals_and_constant_expressions();
-    test_compile_failures();
-    test_compile_options_and_api_args();
-    test_execute_same_program_multiple_times();
-    test_long_expression_register_reuse();
-    test_program_serialize_deserialize_roundtrip();
-    test_program_deserialize_invalid_blob();
-    test_program_deserialize_to_memory_roundtrip();
-    test_hexadecimal_support();
-    test_bitwise_operators();
-    test_ip_literal_parser_support();
-    test_ip_equality_support();
-    test_ip_type_mismatch_failures();
-    return 0;
-}

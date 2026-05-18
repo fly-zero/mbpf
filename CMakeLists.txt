@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(m_bpf LANGUAGES C CXX)
 
 option(MBPF_ENABLE_COVERAGE "Enable gcov coverage flags" OFF)
+option(MBPF_ENABLE_TESTS "Build and run tests" ON)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,11 +58,13 @@ if(MBPF_ENABLE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_link_options(mbpf PRIVATE --coverage)
 endif()
 
-enable_testing()
-add_subdirectory(tests)
+if(MBPF_ENABLE_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 find_program(GCOV_BIN gcov)
-if(MBPF_ENABLE_COVERAGE AND GCOV_BIN)
+if(MBPF_ENABLE_COVERAGE AND MBPF_ENABLE_TESTS AND GCOV_BIN)
     add_custom_target(coverage
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         COMMAND ${GCOV_BIN} -r

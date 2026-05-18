@@ -59,6 +59,13 @@ cmake -S . -B build
 cmake --build build
 ```
 
+如需禁用测试构建：
+
+```bash
+cmake -S . -B build -DMBPF_ENABLE_TESTS=OFF
+cmake --build build
+```
+
 默认会生成两个静态库：
 
 - `mbpf_core`：核心 C++ 实现
